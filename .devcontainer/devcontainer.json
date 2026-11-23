@@ -1,0 +1,20 @@
+{
+  "name": "VisualSync (CUDA 12.4)",
+  "dockerComposeFile": "../compose.yaml",
+  "service": "visualsync",
+  "workspaceFolder": "/workspace/visualsync",
+  "shutdownAction": "stopCompose",
+  "overrideCommand": false,
+  "remoteUser": "root",
+  "postStartCommand": "mkdir -p /root/.codex && chmod 700 /root/.codex && (git config --global --get-all safe.directory | grep -Fxq /workspace/visualsync || git config --global --add safe.directory /workspace/visualsync)",
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "ms-python.vscode-pylance", "ms-python.debugpy", "openai.chatgpt"],
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/conda/bin/python",
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}

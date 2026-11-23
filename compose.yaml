@@ -1,0 +1,30 @@
+services:
+  visualsync:
+    # Build explicitly: docker build -t visualsync:cu124 .
+    image: visualsync:cu124
+    pull_policy: never
+    working_dir: /workspace/visualsync
+    command: ["sleep", "infinity"]
+    init: true
+    stdin_open: true
+    tty: true
+    shm_size: "8gb"
+    env_file:
+      - .env
+    volumes:
+      - .:/workspace/visualsync
+      - model-cache:/cache
+      - codex-state:/root/.codex
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  model-cache:
+    name: visualsync-model-cache
+  codex-state:
+    name: visualsync-codex-state
