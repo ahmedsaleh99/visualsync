@@ -30,9 +30,19 @@ parser.add_argument("--sam2-checkpoint", default="./preprocess/pretrained/sam2.1
 parser.add_argument("--sam2-model-config", default="configs/sam2.1/sam2.1_hiera_l.yaml")
 parser.add_argument("--output-dir", default="gsam2")
 parser.add_argument("--input-dir", default="gpt_video")
+parser.add_argument("--objects", nargs="+", metavar="CLASS",
+                    help="Object classes to segment in every view, bypassing GPT tags")
+parser.add_argument("--visualize", action="store_true", help="Save per-frame detection overlays")
+parser.add_argument("--fp16", action="store_true", help="Use CUDA float16 mixed precision")
 parser.add_argument("--force-cpu", action="store_true")
 parser.add_argument("--use-sport-specific", action="store_true", help="Use sport-specific dynamic objects for each video")
 args = parser.parse_args()
+if args.objects is not None:
+    args.objects = [name.strip().lower().rstrip(".").strip() for name in args.objects]
+    if not all(args.objects):
+        parser.error("--objects requires nonempty class names")
+    if args.use_sport_specific:
+        parser.error("--objects and --use-sport-specific are mutually exclusive")
 
 GROUNDING_MODEL = args.grounding_model
 INPUT_DIR = args.workdir
@@ -44,9 +54,13 @@ USE_SPORT_SPECIFIC = args.use_sport_specific
 
 # environment settings
 # use bfloat16
-torch.autocast(device_type=DEVICE, dtype=torch.bfloat16).__enter__()
-
-if torch.cuda.get_device_properties(0).major >= 8:
+if args.fp16:
+    if DEVICE != "cuda":
+        parser.error("--fp16 requires CUDA")
+    torch.autocast(device_type=DEVICE, dtype=torch.float16).__enter__()
+elif DEVICE == "cuda" and torch.cuda.get_device_properties(0).major >= 8:
+    torch.autocast(device_type=DEVICE, dtype=torch.bfloat16).__enter__()
+if DEVICE == "cuda" and torch.cuda.get_device_properties(0).major >= 8:
     # turn on tfloat32 for Ampere GPUs (https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -115,39 +129,39 @@ def filter_boxes_by_size(boxes, image_size, max_area_percent=10):
 videos = sorted([x for x in os.listdir(INPUT_DIR)])[::-1]
 sport_dyn_objects = defaultdict(set)  # Dictionary to store dynamic objects by sport
 
-print("Step 1: Collecting objects that are actually moving by sport...")
-for video in tqdm(videos, desc="Collecting moving objects"):
-        
-    sport = get_sport_from_video(video)
-    
-    # Load dynamic objects from the video's GPT analysis
-    text_prompt_file = os.path.join(INPUT_DIR, video, args.input_dir, "tags.json")
-    if os.path.exists(text_prompt_file):
-        # Get objects that GPT identified as actually moving in the frames
-        moving_objs = get_dyn_objs_from_gpt_output(text_prompt_file)
-        
-        # Add objects showing movement to this sport's collection
-        sport_dyn_objects[sport].update(set(moving_objs))
+if USE_SPORT_SPECIFIC:
+    print("Step 1: Collecting objects that are actually moving by sport...")
+    for video in tqdm(videos, desc="Collecting moving objects"):
 
-# Convert sets to sorted lists
-sport_dyn_objects = {sport: sorted(list(objects)) for sport, objects in sport_dyn_objects.items()}
+        sport = get_sport_from_video(video)
 
-print(sport_dyn_objects)
+        # Load dynamic objects from the video's GPT analysis
+        text_prompt_file = os.path.join(INPUT_DIR, video, args.input_dir, "tags.json")
+        if os.path.exists(text_prompt_file):
+            # Get objects that GPT identified as actually moving in the frames
+            moving_objs = get_dyn_objs_from_gpt_output(text_prompt_file)
 
-# Step 2: Process each video with sport-specific dynamic objects
-print("\nStep 2: Processing videos with sport-specific moving objects...")
-for i, video in tqdm(enumerate(videos), desc="Processing videos"):
+            # Add objects showing movement to this sport's collection
+            sport_dyn_objects[sport].update(set(moving_objs))
+
+    # Convert sets to sorted lists
+    sport_dyn_objects = {sport: sorted(list(objects)) for sport, objects in sport_dyn_objects.items()}
+
+    print(sport_dyn_objects)
+
+# Segment each view using the selected prompts.
+for video in tqdm(videos, desc="Processing videos"):
 
     work_dir = os.path.join(INPUT_DIR, video)
     image_dir_path = os.path.join(work_dir, "rgb")
     
-    idx_to_id = [i for i in range(256*256*256)]
-    np.random.shuffle(idx_to_id)  # mapping to randomize idx to id to get random color
-
     # Get sport-specific dynamic objects if enabled, otherwise use video-specific
     sport = get_sport_from_video(video)
     
-    if USE_SPORT_SPECIFIC and sport in sport_dyn_objects and len(sport_dyn_objects[sport]) > 0:
+    if args.objects is not None:
+        dyn_objs = args.objects
+        prompt_source = "manual object classes"
+    elif USE_SPORT_SPECIFIC and sport in sport_dyn_objects and len(sport_dyn_objects[sport]) > 0:
         dyn_objs = sport_dyn_objects[sport]
         prompt_source = f"sport-specific moving objects ({sport})"
     else:
@@ -163,7 +177,8 @@ for i, video in tqdm(enumerate(videos), desc="Processing videos"):
     # Create output directories
     output_path_vis = os.path.join(work_dir, OUTPUT_DIR, "vis")
     output_path_mask = os.path.join(work_dir, OUTPUT_DIR, "mask")
-    os.makedirs(output_path_vis, exist_ok=True)
+    if args.visualize:
+        os.makedirs(output_path_vis, exist_ok=True)
     os.makedirs(output_path_mask, exist_ok=True)
     
     # Save the prompt used for this video
@@ -175,6 +190,9 @@ for i, video in tqdm(enumerate(videos), desc="Processing videos"):
         }, f, indent=4)
 
     # Process each frame in the video
+    rng = np.random.default_rng()
+    if args.objects is None:
+        view_instance_ids = rng.choice(256**3 - 1, size=grounding_model.config.num_queries, replace=False) + 1
     for image_file in sorted(os.listdir(image_dir_path)):
         if not(image_file.endswith(".jpg") or image_file.endswith(".png")):
             continue
@@ -240,7 +258,6 @@ for i, video in tqdm(enumerate(videos), desc="Processing videos"):
             """
             Visualize image with supervision useful API
             """
-            img = cv2.imread(full_image_path)
             detections = sv.Detections(
                 xyxy=input_boxes,  # (n, 4)
                 mask=masks.astype(bool),  # (n, h, w)
@@ -261,28 +278,34 @@ for i, video in tqdm(enumerate(videos), desc="Processing videos"):
             detections.confidence = detections.confidence[nms_idx]
             detections.mask = detections.mask[nms_idx]
 
-            labels = [
-                f"{class_names[id]} {confidence:.2f}"
-                for id, confidence
-                in zip(detections.class_id, detections.confidence)
-            ]
+            if args.visualize:
+                labels = [
+                    f"{class_names[id]} {confidence:.2f}"
+                    for id, confidence
+                    in zip(detections.class_id, detections.confidence)
+                ]
 
-            
 
-            box_annotator = sv.BoxAnnotator(color=ColorPalette.from_hex(CUSTOM_COLOR_MAP))
-            annotated_frame = box_annotator.annotate(scene=img.copy(), detections=detections)
 
-            label_annotator = sv.LabelAnnotator(color=ColorPalette.from_hex(CUSTOM_COLOR_MAP), text_scale=1.0, text_thickness=2)
-            annotated_frame = label_annotator.annotate(scene=annotated_frame, detections=detections, labels=labels)
+                box_annotator = sv.BoxAnnotator(color=ColorPalette.from_hex(CUSTOM_COLOR_MAP))
+                annotated_frame = box_annotator.annotate(scene=cv2.cvtColor(image, cv2.COLOR_RGB2BGR), detections=detections)
 
-            mask_annotator = sv.MaskAnnotator(color=ColorPalette.from_hex(CUSTOM_COLOR_MAP))
-            annotated_frame = mask_annotator.annotate(scene=annotated_frame, detections=detections)
+                label_annotator = sv.LabelAnnotator(color=ColorPalette.from_hex(CUSTOM_COLOR_MAP), text_scale=1.0, text_thickness=2)
+                annotated_frame = label_annotator.annotate(scene=annotated_frame, detections=detections, labels=labels)
+
+                mask_annotator = sv.MaskAnnotator(color=ColorPalette.from_hex(CUSTOM_COLOR_MAP))
+                annotated_frame = mask_annotator.annotate(scene=annotated_frame, detections=detections)
+                cv2.imwrite(os.path.join(output_path_vis, image_file), annotated_frame)
 
             masks = detections.mask
             labels = detections.class_id
 
             assert(np.sum(labels == -1) == 0) # check if any label == -1? concept graph has a bug with this
 
+            if args.objects is None:
+                instance_ids = view_instance_ids
+            else:
+                instance_ids = rng.choice(256**3 - 1, size=len(masks), replace=False) + 1
             color_mask = np.zeros(image.shape, dtype=np.uint8)
 
             obj_info_json = []
@@ -294,17 +317,16 @@ for i, video in tqdm(enumerate(videos), desc="Processing videos"):
             for idx in sorted_mask_idx: # render from largest to smallest
                 
                 mask = masks[idx]
-                color_mask[mask] = id_to_colors(idx_to_id[idx])
+                color_mask[mask] = id_to_colors(int(instance_ids[idx]))
 
                 obj_info_json.append({
-                    "id": idx_to_id[idx],
+                    "id": int(instance_ids[idx]),
                     "label": class_names[labels[idx]],
                     "score": float(detections.confidence[idx]),
                 })
 
             color_mask = cv2.cvtColor(color_mask, cv2.COLOR_RGB2BGR)
 
-            cv2.imwrite(os.path.join(output_path_vis, image_file), annotated_frame) # VISUALIZATION
             image_file = image_file.replace(".jpg", ".png")
             cv2.imwrite(os.path.join(output_path_mask, image_file), color_mask)
             with open(os.path.join(output_path_mask, image_file.replace(".png", ".json")), "w") as f:
@@ -312,7 +334,8 @@ for i, video in tqdm(enumerate(videos), desc="Processing videos"):
         
         else:
             
-            imageio.imwrite(os.path.join(output_path_vis, image_file), image) # VISUALIZATION
+            if args.visualize:
+                imageio.imwrite(os.path.join(output_path_vis, image_file), image)
             image_file = image_file.replace(".jpg", ".png")
             cv2.imwrite(os.path.join(output_path_mask, image_file), np.zeros(image.shape, dtype=np.uint8))
             with open(os.path.join(output_path_mask, image_file.replace(".png", ".json")), "w") as f:

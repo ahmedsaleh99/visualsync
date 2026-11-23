@@ -945,7 +945,6 @@ def main():
         #  clear all cuda memory
         torch.cuda.empty_cache()
         
-        breakpoint()
         
 
 if __name__ == "__main__":
