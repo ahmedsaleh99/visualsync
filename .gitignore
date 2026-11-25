@@ -4,6 +4,11 @@
 /data/
 __pycache__/
 /test_vidoes/
+/long_videos/
 /vggt_output/
 /pretrained/
 /preprocess/pretrained/
+
+# Generated Python files
+*.py[cod]
+*.egg-info/
