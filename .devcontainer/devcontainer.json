@@ -3,6 +3,7 @@
   "dockerComposeFile": "../compose.yaml",
   "service": "visualsync",
   "workspaceFolder": "/workspace/visualsync",
+  "forwardPorts": [7861],
   "shutdownAction": "stopCompose",
   "overrideCommand": false,
   "remoteUser": "root",

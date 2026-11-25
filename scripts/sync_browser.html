@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VisualSync</title>
+<style>
+:root { color-scheme: light; font: 16px/1.5 system-ui,sans-serif; color: #172436; background: #edf2f7; }
+body { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+header, section { margin-bottom: 1rem; }
+h1 { margin: 0; font-size: 2rem; }
+h2 { margin: 0 0 .7rem; font-size: 1.15rem; }
+section { background: white; border: 1px solid #ccd7e3; border-radius: .65rem; padding: 1rem; }
+label { display: grid; gap: .25rem; margin: 0 0 .5rem; }
+input, select, textarea, button { box-sizing: border-box; font: inherit; padding: .45rem .6rem; }
+input, select, textarea { min-width: 0; border: 1px solid #a8b8c9; border-radius: .3rem; background: #fff; }
+textarea { resize: vertical; }
+button { border: 0; background: #16569b; color: white; border-radius: .3rem; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(130px,1fr)); gap: .5rem; }
+.inline { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+canvas { width: 100%; height: 175px; background: #f5f8fc; }
+pre { max-height: 15rem; min-height: 3rem; white-space: pre-wrap; overflow: auto; }
+#notice { color: #9c3027; }
+small { color: #43546a; }
+.step-progress { display: grid; grid-template-columns: minmax(0, 1fr) 12rem; align-items: center; gap: .75rem; margin: .25rem 0 .85rem; }
+.step-progress progress { width: 100%; accent-color: #16569b; }
+.pipeline-progress { margin-top: .85rem; }
+.pipeline-progress legend { font-weight: 600; }
+.pipeline-progress .step-progress { margin: .2rem 0 .65rem; }
+@media (max-width: 460px) { .step-progress { grid-template-columns: 1fr; gap: .2rem; } }
+.explorer { display: grid; grid-template-columns: minmax(155px, 30%) minmax(0, 1fr); border: 1px solid #ccd7e3; border-radius: .4rem; margin-bottom: .75rem; min-height: 13rem; }
+.explorer-nav, .explorer-files { overflow: auto; max-height: 19rem; padding: .5rem; }
+.explorer-nav { border-right: 1px solid #ccd7e3; background: #f5f8fc; }
+.explorer-nav ul, .explorer-files ul { list-style: none; margin: 0; padding: 0; }
+.explorer-nav ul ul { padding-left: .9rem; }
+.explorer button { font-size: .85rem; padding: .21rem .45rem; }
+.explorer .path-button { background: transparent; color: #174677; text-align: left; overflow-wrap: anywhere; }
+.explorer .directory-row { display: flex; align-items: baseline; }
+.explorer .directory-row .path-button:last-child { flex: 1; }
+.explorer .current { background: #dceafa; }
+.explorer .breadcrumb { display: flex; align-items: center; gap: .15rem; flex-wrap: wrap; border-bottom: 1px solid #e4ebf3; padding-bottom: .4rem; margin-bottom: .35rem; }
+.explorer .file-row { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; padding: .2rem .15rem; border-bottom: 1px solid #edf0f4; overflow-wrap: anywhere; }
+.explorer .file-row button { flex-shrink: 0; }
+.explorer .file-actions { padding: .2rem 0 .4rem; }
+@media (max-width: 560px) { .explorer { grid-template-columns: 1fr; } .explorer-nav { max-height: 9rem; border-right: 0; border-bottom: 1px solid #ccd7e3; } }
+</style>
+</head>
+<body>
+<header><h1>VisualSync</h1><small>Long-recording synchronization</small></header>
+<section>
+<h2 id="extract-title">1. Extract samples</h2>
+<div id="input-tree" aria-label="Source video tree"></div>
+<label>Original video paths <small>One workspace path per line. VisualSync defaults to the tripod video when selected, or the first video otherwise.</small>
+<textarea id="paths" rows="4" placeholder="/workspace/visualsync/videos/camera01.mp4"></textarea></label>
+<div class="grid">
+<label>Reference video<select id="reference"></select></label>
+<label>Results directory<input id="output" value="data/long-sync"></label>
+</div>
+<div class="grid">
+<label>Windows across reference<input id="count" type="number" min="2" value="5"></label>
+<label>Window duration (sec)<input id="duration" type="number" min="1" step="1" value="60" placeholder="Auto"></label>
+<label>Sample FPS<input id="fps" type="number" min=".01" step="any" value="5"></label>
+</div>
+<div class="step-progress"><progress id="extract-progress" value="0" aria-labelledby="extract-title" aria-describedby="extract-status"></progress><small id="extract-status" role="status"></small></div>
+<button id="extract">Extract samples</button>
+</section>
+<section>
+<h2 id="sync-title">2. Synchronize samples</h2>
+<div class="step-progress"><progress id="sync-progress" value="0" aria-labelledby="sync-title" aria-describedby="sync-status"></progress><small id="sync-status" role="status"></small></div>
+<label>Search radius (s)<input id="radius" type="number" min=".01" step="any" value="20"></label>
+<label>Object prompts <input id="objects" value="person"></label>
+<label class="inline"><input id="visualize" type="checkbox"> Save diagnostic previews</label>
+<label class="inline"><input id="reuse-stages" type="checkbox" checked> Reuse completed stages from this run</label>
+<button id="sync" disabled>Synchronize samples</button>
+<fieldset id="pipeline-progress" class="pipeline-progress" hidden>
+<legend id="pipeline-window">Synchronization pipeline</legend>
+</fieldset>
+</section>
+<section>
+<h2 id="export-title">3. Export synchronized videos</h2>
+<div class="step-progress"><progress id="export-progress" value="0" aria-labelledby="export-title" aria-describedby="export-status"></progress><small id="export-status" role="status"></small></div>
+<div class="inline"><input id="snapshot" size="30" placeholder="Path to samples.json or snapshots.json" aria-label="Saved manifest path">
+<button id="open">Open saved samples or results</button></div>
+<div class="grid">
+<label>Model<select id="mode"><option value="linear">Single linear</option><option value="piecewise">Piecewise linear</option></select></label>
+<label>Camera<select id="camera"></select></label>
+</div>
+<canvas id="chart" width="850" height="175" aria-label="Offsets in seconds over the reference timeline"></canvas>
+<p id="summary">Synchronize samples to review offsets.</p>
+<div class="inline"><button id="save" disabled>Save sync map</button><button id="export" disabled>Export trim only</button></div>
+</section>
+<section>
+<div class="inline"><h2>Job files</h2><button id="refresh-files" type="button" disabled>Refresh files</button></div>
+<div id="job-tree" aria-label="Job file tree">Extract samples or open a saved job to see its files.</div>
+</section>
+<section><h2 id="state">Run log</h2><p id="notice" role="alert"></p><p id="connection" role="status"></p><pre id="log"></pre></section>
+<script>
+const el = id => document.getElementById(id);
+const val = id => el(id).value;
+const paths = () => val("paths").split("\n").map(p => p.trim()).filter(Boolean);
+const mode = () => val("mode");
+let lastJobError, analysis, analysisKey, ready = false, busy = false, samplesReady = false, trimAvailable = false, modelRequest = 0;
+let startingExtraction = false, stepProgress = {}, statusRequest = 0;
+let canExtract = true;
+const pipelineStages = [
+  ["prepare", "Prepare frames"], ["segment", "Object segmentation"],
+  ["mask_track", "Mask tracking"], ["pose", "Camera pose estimation"],
+  ["point_track", "Point tracking", "cameras"], ["pair_score", "Camera pair scoring", "pairs"],
+  ["solve", "Global offset solve"]
+];
+for (const [step, name] of pipelineStages) {
+  const title = document.createElement("label");
+  title.htmlFor = step + "-progress";
+  title.textContent = name;
+  const row = document.createElement("div");
+  row.className = "step-progress";
+  const bar = document.createElement("progress");
+  bar.id = title.htmlFor;
+  bar.value = 0;
+  const label = document.createElement("small");
+  label.id = step + "-status";
+  bar.setAttribute("aria-describedby", label.id);
+  row.append(bar, label);
+  el("pipeline-progress").append(title, row);
+}
+function options(id, entries) {
+  const previous = val(id);
+  el(id).replaceChildren(...entries.map(([value, label]) => new Option(label, value)));
+  if (entries.some(([value]) => value === previous)) el(id).value = previous;
+}
+function fileName(path) { return path.split("/").pop(); }
+let chosenReference;
+el("reference").onchange = () => { chosenReference = val("reference"); };
+el("paths").oninput = () => {
+  const selected = [...new Set(paths())];
+  options("reference", selected.map(path => [path, fileName(path)]));
+  if (!selected.includes(chosenReference)) chosenReference = undefined;
+  el("reference").value = chosenReference
+    ?? selected.find(path => fileName(path).toLowerCase().startsWith("tripod"))
+    ?? selected[0] ?? "";
+};
+async function call(path, data) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const options = {signal: controller.signal};
+    if (data !== undefined) {
+      Object.assign(options, {
+        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data)
+      });
+    }
+    const response = await fetch(path, options);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("The server took too long to respond. Check the forwarded port and retry.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+let jobDirectory;
+function setPaths(newPaths) {
+  el("paths").value = [...new Set(newPaths)].join("\n");
+  el("paths").oninput();
+}
+function treeButton(text, handler) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = text;
+  button.onclick = handler;
+  return button;
+}
+function explorer(endpoint, rootLabel, initialPath = []) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "explorer";
+  const nav = document.createElement("div");
+  nav.className = "explorer-nav";
+  nav.setAttribute("aria-label", "Folders");
+  const files = document.createElement("div");
+  files.className = "explorer-files";
+  files.setAttribute("aria-label", "Folder contents");
+  wrapper.append(nav, files);
+
+  const nodes = new Map();
+  const listings = new Map();
+  function getFolder(path) {
+    if (!listings.has(path)) {
+      listings.set(path, call(endpoint + "?folder=" + encodeURIComponent(path)).catch(error => {
+        listings.delete(path);
+        throw error;
+      }));
+    }
+    return listings.get(path);
+  }
+  let selected;
+  let request = 0;
+  const isInput = endpoint === "/videos";
+  async function openFolder(node, remainingPath = []) {
+    const current = ++request;
+    if (selected) {
+      selected.name.classList.remove("current");
+      selected.name.removeAttribute("aria-current");
+    }
+    selected = node;
+    node.name.classList.add("current");
+    node.name.setAttribute("aria-current", "true");
+    files.textContent = "Loading…";
+    try {
+      const listing = await getFolder(node.path);
+      if (current !== request) return;
+      populate(node, listing.directories);
+      expand(node, true);
+      if (remainingPath.length) {
+        const [segment, ...rest] = remainingPath;
+        const childPath = node.path === "." ? segment : node.path + "/" + segment;
+        const child = nodes.get(childPath);
+        if (child) return openFolder(child, rest);
+      }
+      const breadcrumb = document.createElement("div");
+      breadcrumb.className = "breadcrumb";
+      const parts = node.path === "." ? [] : node.path.split("/");
+      for (let index = 0; index <= parts.length; index++) {
+        if (index) breadcrumb.append(document.createTextNode("/"));
+        const ancestor = nodes.get(index ? parts.slice(0, index).join("/") : ".");
+        const link = treeButton(index ? parts[index - 1] : rootLabel, () => openFolder(ancestor));
+        link.className = "path-button";
+        breadcrumb.append(link);
+      }
+      files.replaceChildren(breadcrumb);
+      const actions = document.createElement("div");
+      actions.className = "file-actions";
+      if (isInput && listing.videos.length) {
+        actions.append(treeButton("Use all videos in this folder", () => {
+          setPaths(listing.videos.map(name => listing.directory + "/" + name));
+        }));
+        files.append(actions);
+      }
+      const rows = document.createElement("ul");
+      for (const child of listing.directories) {
+        const row = document.createElement("li");
+        row.className = "file-row";
+        const folder = treeButton(fileName(child) + "/", () => openFolder(nodes.get(child)));
+        folder.className = "path-button";
+        row.append(folder);
+        rows.append(row);
+      }
+      for (const name of isInput ? listing.videos : listing.files) {
+        const row = document.createElement("li");
+        row.className = "file-row";
+        row.append(document.createTextNode(name));
+        const path = listing.directory + "/" + name;
+        if (isInput) {
+          row.append(treeButton("Add", () => setPaths([...paths(), path])));
+        } else if (name === "samples.json" || name === "snapshots.json") {
+          row.append(treeButton("Open", action(async () => {
+            await call("/open", {path});
+            await refresh();
+          })));
+        } else {
+          row.append(treeButton("Copy path", action(() => navigator.clipboard.writeText(path))));
+        }
+        rows.append(row);
+      }
+      files.append(rows.children.length ? rows : document.createTextNode("This folder is empty."));
+    } catch (error) {
+      if (current === request) {
+        files.replaceChildren(document.createTextNode(error.message), treeButton("Retry", () => openFolder(node)));
+      }
+    }
+  }
+
+  function expand(node, expanded) {
+    node.children.hidden = !expanded;
+    node.toggle.textContent = expanded ? "▾" : "▸";
+    node.toggle.setAttribute("aria-expanded", String(expanded));
+  }
+
+  function populate(node, paths) {
+    if (node.loaded) return;
+    node.loaded = true;
+    for (const path of paths) node.children.append(makeNode(path, fileName(path)).element);
+    if (!paths.length) node.toggle.disabled = true;
+  }
+
+  function makeNode(path, label) {
+    const element = document.createElement("li");
+    const row = document.createElement("div");
+    row.className = "directory-row";
+    const children = document.createElement("ul");
+    const node = {path, element, children, loaded: false};
+    const name = treeButton(label, () => openFolder(node));
+    const toggle = treeButton("▸", action(async () => {
+      if (!children.hidden) { expand(node, false); return; }
+      if (!node.loaded) {
+        const listing = await getFolder(node.path);
+        populate(node, listing.directories);
+      }
+      expand(node, true);
+    }));
+    name.className = toggle.className = "path-button";
+    toggle.setAttribute("aria-label", "Expand or collapse " + label);
+    node.name = name;
+    node.toggle = toggle;
+    expand(node, false);
+    row.append(toggle, name);
+    element.append(row, children);
+    nodes.set(path, node);
+    return node;
+  }
+
+  const tree = document.createElement("ul");
+  const root = makeNode(".", rootLabel);
+  tree.append(root.element);
+  nav.append(tree);
+  openFolder(root, initialPath);
+  return wrapper;
+}
+function showJob() {
+  el("refresh-files").disabled = !jobDirectory;
+  if (jobDirectory) {
+    el("job-tree").replaceChildren(explorer("/files", fileName(jobDirectory)));
+  }
+}
+el("refresh-files").onclick = showJob;
+
+function buttons() {
+  const working = busy || startingExtraction;
+  el("extract").disabled = !canExtract || startingExtraction;
+  el("sync").disabled = working || !samplesReady;
+  el("open").disabled = working;
+  el("save").disabled = !ready || working;
+  el("export").disabled = !ready || working || !trimAvailable;
+}
+const action = callback => async () => {
+  el("notice").textContent = "";
+  try { await callback(); } catch (error) { el("notice").textContent = error.message; }
+};
+el("extract").onclick = action(async () => {
+  startingExtraction = true;
+  showProgress();
+  buttons();
+  try {
+    await call("/extract", {
+      paths: paths(), reference: val("reference"), output: val("output"),
+      count: val("count"), duration: val("duration"), fps: val("fps")
+    });
+    busy = true;
+    canExtract = false;
+    stepProgress = {...stepProgress, extract: {state: "running"}};
+  } finally {
+    startingExtraction = false;
+    showProgress();
+    buttons();
+  }
+  await refresh();
+});
+el("sync").onclick = action(async () => {
+  await call("/sync", {
+    radius: val("radius"),
+    objects: val("objects").split(",").map(o => o.trim()).filter(Boolean),
+    visualize: el("visualize").checked,
+    reuse_stages: el("reuse-stages").checked
+  });
+  busy = true; buttons();
+});
+el("open").onclick = action(async () => { await call("/open", {path: val("snapshot")}); await refresh(); });
+el("save").onclick = action(async () => {
+  const {model} = await call("/model", {mode: mode()});
+  const url = URL.createObjectURL(new Blob([JSON.stringify(model, null, 2) + "\n"], {type: "application/json"}));
+  const link = document.createElement("a");
+  link.href = url; link.download = "sync_map.json"; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+el("export").onclick = action(async () => {
+  const {plan} = await call("/model", {mode: mode()});
+  if (plan.error) throw new Error(plan.error);
+  const drift = Math.max(...Object.values(plan.views).map(view => view.residual_drift));
+  const extrapolates = Object.values(plan.views).some(view => view.extrapolates);
+  const details = "Shared reference span: " + plan.start.toFixed(2) + "–" + plan.end.toFixed(2)
+    + " s. Modeled residual drift: " + drift.toFixed(3) + " s, plus keyframe rounding."
+    + (extrapolates ? "\nThe model uses extrapolation." : "")
+    + "\nCopy original video and audio streams into MKV files?";
+  if (confirm(details)) { await call("/export", {mode: mode()}); busy = true; canExtract = false; buttons(); }
+});
+async function updateModel() {
+  if (!analysis) return;
+  const request = ++modelRequest;
+  const camera = val("camera");
+  const {model, plan} = await call("/model", {mode: mode()});
+  if (request !== modelRequest) return;
+  trimAvailable = !plan.error;
+  buttons();
+  const fit = model.models[camera];
+  const samples = analysis.windows.filter(w => w.offsets[camera] !== undefined)
+    .map(w => [w.time, w.offsets[camera]]);
+  const residuals = fit?.residuals || [];
+  el("summary").textContent = samples.length + " usable measurements. "
+    + (fit ? "Largest fit residual: " + Math.max(0, ...residuals.map(Math.abs)).toFixed(3) + " s."
+           : "More reliable windows or a monotone fit are required.")
+    + (plan.error ? " " + plan.error : "");
+  draw(samples, fit);
+}
+el("mode").onchange = el("camera").onchange = action(updateModel);
+function draw(samples, fit) {
+  const canvas = el("chart"), ctx = canvas.getContext("2d"), width = canvas.width, height = canvas.height;
+  ctx.clearRect(0, 0, width, height);
+  if (!samples.length) return;
+  const end = analysis.cameras[analysis.reference].duration;
+  const knots = fit ? fit.times.map((t, i) => [t, fit.offsets[i]]) : [];
+  const extension = knots.length ? [0, end].map((t, i) => {
+    const j = i ? knots.length - 2 : 0;
+    const [x, y] = knots[j], [xx, yy] = knots[j + 1];
+    return [t, y + (t - x) * (yy - y) / (xx - x)];
+  }) : [];
+  const values = [...samples, ...knots, ...extension].map(p => p[1]);
+  const low = Math.min(...values), high = Math.max(...values), span = Math.max(high - low, .01);
+  const x = t => 67 + t / end * (width - 89);
+  const y = v => height - 32 - ((v - low + .08 * span) / (1.16 * span)) * (height - 56);
+  function line(points, color, dash = []) {
+    ctx.beginPath(); ctx.setLineDash(dash); ctx.strokeStyle = color;
+    points.forEach(([px, py], i) => i ? ctx.lineTo(px, py) : ctx.moveTo(px, py));
+    ctx.stroke();
+  }
+  line([[67, 12], [67, height - 32], [width - 22, height - 32]], "#64748b");
+  ctx.fillStyle = "#34465d"; ctx.font = "13px system-ui";
+  ctx.fillText("0 s", 67, height - 10); ctx.fillText(end.toFixed(1) + " s", width - 65, height - 10);
+  ctx.fillText(low.toFixed(3) + " s", 5, y(low));
+  if (high !== low) ctx.fillText(high.toFixed(3) + " s", 5, y(high));
+  const mapped = points => points.map(([t, v]) => [x(t), y(v)]);
+  if (knots.length) {
+    line(mapped([extension[0], ...knots, extension[1]]), "#2563eb", [5, 3]);
+    line(mapped(knots), "#2563eb");
+  }
+  ctx.fillStyle = "#b45309";
+  for (const [t, v] of samples) { ctx.beginPath(); ctx.arc(x(t), y(v), 4, 0, Math.PI * 2); ctx.fill(); }
+}
+async function refresh() {
+  const request = ++statusRequest;
+  const status = await call("/status");
+  if (request !== statusRequest) return;
+  const finished = busy && !status.busy;
+  busy = status.busy;
+  canExtract = status.can_extract ?? !busy;
+  if (status.directory !== jobDirectory || finished) {
+    jobDirectory = status.directory;
+    showJob();
+  }
+  samplesReady = status.samples_ready;
+  stepProgress = status.progress;
+  const windowNumber = status.pipeline_window;
+  el("pipeline-progress").hidden = !windowNumber;
+  if (windowNumber) {
+    el("pipeline-window").textContent = "Synchronization pipeline · Window " + windowNumber.join("/");
+  }
+  showProgress();
+  el("state").textContent = busy ? "Run log · working" : "Run log";
+  const jobError = status.messages.find(message => message.startsWith("Error: "));
+  if (jobError && jobError !== lastJobError) el("notice").textContent = jobError;
+  lastJobError = jobError;
+  const log = status.messages.join("\n");
+  if (el("log").textContent !== log) { el("log").textContent = log; el("log").scrollTop = el("log").scrollHeight; }
+  const key = JSON.stringify(status.analysis);
+  if (key !== analysisKey) {
+    analysisKey = key; analysis = status.analysis; ready = Boolean(analysis);
+    if (ready) {
+      options("camera", Object.entries(analysis.cameras).filter(([id]) => id !== analysis.reference)
+        .map(([id, camera]) => [id, fileName(camera.path)]));
+      await updateModel();
+    } else {
+      trimAvailable = false;
+      options("camera", []);
+      el("summary").textContent = "Synchronize samples to review offsets.";
+      draw([], null);
+    }
+  }
+  buttons();
+}
+function showProgress() {
+  const steps = startingExtraction ? {...stepProgress, extract: {state: "running"}} : stepProgress;
+  const bars = [["extract", "samples"], ["sync", "windows"], ["export", "videos"],
+    ...pipelineStages.map(([step, , unit]) => [step, unit])];
+  for (const [step, unit] of bars) {
+    const {state, completed = 0, total, elapsed_seconds: elapsed} = steps[step] || {};
+    const bar = el(step + "-progress");
+    bar.max = total || 1;
+    if (state === "running" && total == null) bar.removeAttribute("value");
+    else bar.value = completed;
+    const label = el(step + "-status");
+    const duration = elapsed == null ? "" : [Math.floor(elapsed / 60), elapsed % 60]
+      .map(part => String(part).padStart(2, "0")).join(":");
+    const description = [total ? `${completed}/${total}${unit ? " " + unit : ""}` : "", duration]
+      .filter(Boolean).join(" · ");
+    if (label.textContent !== description) label.textContent = description;
+  }
+}
+async function poll() {
+  try {
+    await refresh();
+    el("connection").textContent = "";
+  } catch (error) {
+    el("connection").textContent = "Connection to VisualSync interrupted. " + error.message;
+  }
+  setTimeout(poll, busy ? 1000 : 3000);
+}
+el("input-tree").append(explorer("/videos", "Repository", ["long_videos", "video_samples"]));
+poll();
+</script>
+</body>
+</html>

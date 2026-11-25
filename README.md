@@ -459,6 +459,56 @@ The default reference is the source manifest's main camera when available,
 or the first camera by name. When reliable pairwise links are insufficient,
 the command reports which views could not be tied to that reference.
 
+#### Synchronize long recordings in the desktop GUI
+
+Launch the GUI in the VisualSync Python environment with FFmpeg available:
+
+```bash
+python scripts/sync_gui.py
+```
+
+When a desktop display is unavailable, the command starts a loopback browser
+interface at `http://127.0.0.1:7861`. In a remote Dev Container, forward port
+7861 through VS Code and open the forwarded localhost address. Use `--browser`
+to select this interface explicitly or `--port` to choose a different port.
+In the browser, expand a folder from the repository root and click
+**Use all videos in this folder** to load its clips. This uses only the videos
+directly in the chosen folder. You can also enter individual video paths
+as seen by the container, one per line.
+
+1. **Extract samples.** Select the original fixed-camera videos and a
+   reference, then set the window count, window duration, and sample FPS.
+   The sample FPS applies to all cameras.
+   Windows are spaced evenly across the reference video, including its last
+   full window. Window duration defaults to 60 seconds. Clear the field to
+   use half the reference span capped at 60 seconds. Shorter cameras contribute only
+   where they cover the sampled window. The clips and `samples.json` are
+   saved in a run folder labeled with the sample count, window duration, and FPS.
+2. **Synchronize samples.** Run the author's pairwise search and global
+   solve on the saved clips. Snapshot diagnostics are optional. The run log
+   shows failed windows, and results are saved in `snapshots.json`.
+   Leave **Reuse completed stages from this run** checked to continue from
+   compatible checkpoints when rerunning or reopening a job.
+3. **Export trim only.** Review the fitted offsets and export from the
+   original videos. You can also save the sync map.
+
+Open either manifest in the GUI to resume at the corresponding step. The
+browser's **Job files** tree shows the current run's clips and results.
+
+Select **linear** for one robust drift fit or **piecewise** for continuous
+linear interpolation between reliable samples. The plot shows measured offsets
+in orange, the fitted span in solid blue, and extrapolation in dashed blue.
+Save the model as a sync map or choose **Export trim only**. The sync map uses
+`source_seconds = reference_seconds + offset_seconds`.
+
+Trim export writes new MKV files by copying the compressed video and audio
+streams from the originals. Each camera retains its original frame rate.
+The export starts at seekable keyframes and reports the selected cuts,
+keyframe differences, and residual modeled drift in `trim_report.json`.
+A single trim aligns the beginning up to keyframe precision. Drift over the
+rest of the clip remains in the exported streams, and the sync map records
+the full time-varying alignment.
+
 #### Run the same workflow at 5 fps
 
 Prepare the unsynchronized clips in a separate working directory:
